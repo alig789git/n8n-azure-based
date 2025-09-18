@@ -1,0 +1,56 @@
+# monitoring/prometheus-values.yaml
+# Helm values for kube-prometheus-stack
+
+prometheus:
+  prometheusSpec:
+    retention: 15d
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: managed-csi
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 50Gi
+    
+    additionalScrapeConfigs:
+    - job_name: 'n8n'
+      static_configs:
+      - targets: ['n8n-service.n8n.svc.cluster.local:80']
+      metrics_path: /metrics
+      scrape_interval: 30s
+      scrape_timeout: 10s
+
+alertmanager:
+  alertmanagerSpec:
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: managed-csi
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi
+
+grafana:
+  adminPassword: "admin123"  # Change in production
+  persistence:
+    enabled: true
+    storageClassName: managed-csi
+    size: 10Gi
+  
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+      - name: 'n8n-dashboards'
+        orgId: 1
+        folder: 'n8n'
+        type: file
+        disableDeletion: false
+        editable: true
+        options:
+          path: /var/lib/grafana/dashboards/n8n
+
+  dashboardsConfigMaps:
+    n8n-dashboards: n8n-dashboard

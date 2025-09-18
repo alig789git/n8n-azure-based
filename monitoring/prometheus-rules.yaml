@@ -1,0 +1,57 @@
+# monitoring/prometheus-rules.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: n8n-alerts
+  namespace: n8n
+  labels:
+    app: n8n
+    prometheus: kube-prometheus
+spec:
+  groups:
+  - name: n8n.rules
+    rules:
+    - alert: N8nDown
+      expr: up{job="n8n"} == 0
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "n8n instance is down"
+        description: "n8n instance {{ $labels.instance }} has been down for more than 5 minutes."
+    
+    - alert: N8nHighCPUUsage
+      expr: rate(container_cpu_usage_seconds_total{pod=~"n8n-.*"}[5m]) > 0.8
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "n8n pod has high CPU usage"
+        description: "n8n pod {{ $labels.pod }} has been using more than 80% CPU for 10 minutes."
+    
+    - alert: N8nHighMemoryUsage
+      expr: container_memory_usage_bytes{pod=~"n8n-.*"} / container_spec_memory_limit_bytes{pod=~"n8n-.*"} > 0.9
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "n8n pod has high memory usage"
+        description: "n8n pod {{ $labels.pod }} is using more than 90% of its memory limit."
+    
+    - alert: N8nPodRestartingTooOften
+      expr: rate(kube_pod_container_status_restarts_total{pod=~"n8n-.*"}[1h]) > 0.1
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "n8n pod is restarting too often"
+        description: "n8n pod {{ $labels.pod }} has restarted more than 6 times in the last hour."
+    
+    - alert: N8nDatabaseConnectionFailure
+      expr: n8n_database_connections_failed_total > 0
+      for: 2m
+      labels:
+        severity: critical
+      annotations:
+        summary: "n8n database connection failure"
+        description: "n8n is experiencing database connection failures."

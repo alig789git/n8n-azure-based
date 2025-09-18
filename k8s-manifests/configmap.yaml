@@ -1,0 +1,21 @@
+# k8s-manifests/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: n8n-config
+  namespace: n8n
+data:
+  N8N_HOST: "n8n.demo.example.com"
+  N8N_PORT: "5678"
+  N8N_PROTOCOL: "https"
+  N8N_DATABASE_TYPE: "postgresdb"
+  N8N_DATABASE_HOST: "psql-n8n-demo.privatelink.postgres.database.azure.com"
+  N8N_DATABASE_PORT: "5432"
+  N8N_DATABASE_NAME: "n8n"
+  N8N_DEFAULT_BINARY_DATA_MODE: "filesystem"
+  N8N_USER_MANAGEMENT_DISABLED: "false"
+  N8N_METRICS: "true"
+  N8N_LOG_LEVEL: "info"
+  N8N_EXECUTE_IN_MAIN_PROCESS: "false"
+  EXECUTIONS_PROCESS: "main"
+  N8N_DISABLE_UI: "false"

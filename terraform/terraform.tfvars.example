@@ -1,0 +1,44 @@
+# terraform/terraform.tfvars.example
+
+# Copy this file to terraform.tfvars and update with your values
+
+# Basic Configuration
+environment = "demo"
+location    = "West Europe"
+
+# Common Tags
+common_tags = {
+  Project     = "n8n-demo"
+  Environment = "demo"
+  ManagedBy   = "terraform"
+  Owner       = "DevOps Team"
+  CostCenter  = "IT"
+}
+
+# AKS Configuration
+kubernetes_version  = "1.28.3"
+node_count         = 2
+node_vm_size       = "Standard_B2s"
+enable_auto_scaling = true
+min_node_count     = 1
+max_node_count     = 3
+
+# PostgreSQL Configuration
+postgres_admin_username         = "n8nadmin"
+postgres_admin_password         = "YourSecurePassword123!"  # Use a secure password
+postgres_sku_name              = "B_Standard_B1ms"
+postgres_storage_mb            = 32768
+postgres_backup_retention_days = 7
+
+# Security Configuration
+allowed_ip_ranges = [
+  "0.0.0.0/0"  # Replace with your actual IP ranges in production
+]
+enable_network_policy = true
+
+# Monitoring Configuration
+log_analytics_retention_days = 30
+enable_application_insights  = true
+
+# Application Configuration
+n8n_image_tag = "1.0.5"

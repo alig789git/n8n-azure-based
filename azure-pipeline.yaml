@@ -1,0 +1,427 @@
+# azure-pipelines.yml
+
+trigger:
+  branches:
+    include:
+    - main
+    - develop
+  paths:
+    include:
+    - terraform/*
+    - k8s-manifests/*
+    - monitoring/*
+    - tests/*
+
+pr:
+  branches:
+    include:
+    - main
+  paths:
+    include:
+    - terraform/*
+    - k8s-manifests/*
+    - monitoring/*
+    - tests/*
+
+variables:
+  # Build variables
+  buildConfiguration: 'Release'
+  vmImageName: 'ubuntu-latest'
+  
+  # Azure variables
+  azureServiceConnection: 'Azure-Service-Connection'
+  resourceGroupName: 'rg-n8n-demo'
+  aksClusterName: 'aks-n8n-demo'
+  keyVaultName: 'kv-n8n-demo-xxxx'
+  
+  # Terraform variables
+  terraformVersion: '1.5.7'
+  terraformWorkingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
+  
+  # Kubernetes variables
+  kubernetesServiceConnection: 'AKS-Service-Connection'
+  kubernetesNamespace: 'n8n'
+  
+  # Application variables
+  imageRepository: 'n8n'
+  containerRegistry: 'acrn8ndemo.azurecr.io'
+
+stages:
+- stage: Validate
+  displayName: 'Validate and Lint'
+  jobs:
+  - job: ValidateTerraform
+    displayName: 'Validate Terraform'
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - task: TerraformInstaller@0
+      displayName: 'Install Terraform'
+      inputs:
+        terraformVersion: $(terraformVersion)
+    
+    - task: TerraformTaskV4@4
+      displayName: 'Terraform Init'
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: $(terraformWorkingDirectory)
+        backendServiceArm: $(azureServiceConnection)
+        backendAzureRmResourceGroupName: 'rg-terraform-state'
+        backendAzureRmStorageAccountName: 'stterraformstate'
+        backendAzureRmContainerName: 'tfstate'
+        backendAzureRmKey: 'n8n-demo.tfstate'
+    
+    - task: TerraformTaskV4@4
+      displayName: 'Terraform Validate'
+      inputs:
+        provider: 'azurerm'
+        command: 'validate'
+        workingDirectory: $(terraformWorkingDirectory)
+    
+    - task: TerraformTaskV4@4
+      displayName: 'Terraform Plan'
+      inputs:
+        provider: 'azurerm'
+        command: 'plan'
+        workingDirectory: $(terraformWorkingDirectory)
+        environmentServiceNameAzureRM: $(azureServiceConnection)
+        commandOptions: '-var="environment=demo" -var="location=westeurope" -out=tfplan'
+    
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish Terraform Plan'
+      inputs:
+        targetPath: '$(terraformWorkingDirectory)/tfplan'
+        artifact: 'terraform-plan'
+
+  - job: ValidateKubernetes
+    displayName: 'Validate Kubernetes Manifests'
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - task: KubectlInstaller@0
+      displayName: 'Install kubectl'
+      inputs:
+        kubectlVersion: '1.28.0'
+    
+    - script: |
+        # Validate YAML syntax
+        for file in k8s-manifests/*.yaml; do
+          echo "Validating $file"
+          kubectl --dry-run=client apply -f "$file" || exit 1
+        done
+        
+        # Lint with kubeval if available
+        if command -v kubeval &> /dev/null; then
+          kubeval k8s-manifests/*.yaml
+        fi
+      displayName: 'Validate Kubernetes YAML'
+    
+    - script: |
+        # Check for security best practices
+        echo "Checking security configurations..."
+        
+        # Check for privileged containers
+        if grep -r "privileged.*true" k8s-manifests/; then
+          echo "ERROR: Privileged containers found!"
+          exit 1
+        fi
+        
+        # Check for root user
+        if grep -r "runAsUser.*0" k8s-manifests/; then
+          echo "ERROR: Containers running as root found!"
+          exit 1
+        fi
+        
+        echo "Security checks passed"
+      displayName: 'Security Validation'
+
+- stage: Test
+  displayName: 'Test Stage'
+  dependsOn: Validate
+  jobs:
+  - job: UnitTests
+    displayName: 'Run Unit Tests'
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - script: |
+        echo "Running unit tests..."
+        # Add your unit tests here
+        chmod +x tests/health-check.sh
+        bash tests/health-check.sh --dry-run
+      displayName: 'Run Unit Tests'
+
+- stage: Deploy_Infrastructure
+  displayName: 'Deploy Infrastructure'
+  dependsOn: Test
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - deployment: DeployTerraform
+    displayName: 'Deploy Infrastructure with Terraform'
+    pool:
+      vmImage: $(vmImageName)
+    environment: 'n8n-demo-infrastructure'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+          
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download Terraform Plan'
+            inputs:
+              buildType: 'current'
+              artifactName: 'terraform-plan'
+              targetPath: $(terraformWorkingDirectory)
+          
+          - task: TerraformInstaller@0
+            displayName: 'Install Terraform'
+            inputs:
+              terraformVersion: $(terraformVersion)
+          
+          - task: TerraformTaskV4@4
+            displayName: 'Terraform Init'
+            inputs:
+              provider: 'azurerm'
+              command: 'init'
+              workingDirectory: $(terraformWorkingDirectory)
+              backendServiceArm: $(azureServiceConnection)
+              backendAzureRmResourceGroupName: 'rg-terraform-state'
+              backendAzureRmStorageAccountName: 'stterraformstate'
+              backendAzureRmContainerName: 'tfstate'
+              backendAzureRmKey: 'n8n-demo.tfstate'
+          
+          - task: TerraformTaskV4@4
+            displayName: 'Terraform Apply'
+            inputs:
+              provider: 'azurerm'
+              command: 'apply'
+              workingDirectory: $(terraformWorkingDirectory)
+              environmentServiceNameAzureRM: $(azureServiceConnection)
+              commandOptions: 'tfplan'
+          
+          - task: TerraformTaskV4@4
+            displayName: 'Get Terraform Outputs'
+            inputs:
+              provider: 'azurerm'
+              command: 'output'
+              workingDirectory: $(terraformWorkingDirectory)
+              environmentServiceNameAzureRM: $(azureServiceConnection)
+
+- stage: Deploy_Application
+  displayName: 'Deploy Application'
+  dependsOn: Deploy_Infrastructure
+  jobs:
+  - deployment: DeployN8N
+    displayName: 'Deploy n8n to AKS'
+    pool:
+      vmImage: $(vmImageName)
+    environment: 'n8n-demo-application'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+          
+          - task: AzureCLI@2
+            displayName: 'Get AKS Credentials'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az aks get-credentials --resource-group $(resourceGroupName) --name $(aksClusterName)
+                kubectl config current-context
+          
+          - task: AzureCLI@2
+            displayName: 'Update Secrets from Key Vault'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                # Get secrets from Key Vault
+                POSTGRES_CONNECTION=$(az keyvault secret show --vault-name $(keyVaultName) --name postgres-connection-string --query value -o tsv)
+                N8N_ENCRYPTION_KEY=$(az keyvault secret show --vault-name $(keyVaultName) --name n8n-encryption-key --query value -o tsv)
+                
+                # Extract database credentials from connection string
+                DB_USER=$(echo $POSTGRES_CONNECTION | sed -n 's/.*:\/\/\([^:]*\):.*/\1/p')
+                DB_PASSWORD=$(echo $POSTGRES_CONNECTION | sed -n 's/.*:\/\/[^:]*:\([^@]*\)@.*/\1/p')
+                
+                # Update the secret manifest
+                sed -i "s/ChangeMePlease123!/$DB_PASSWORD/g" k8s-manifests/secret.yaml
+                sed -i "s/n8n-encryption-key-placeholder/$N8N_ENCRYPTION_KEY/g" k8s-manifests/secret.yaml
+                sed -i "s/n8nadmin/$DB_USER/g" k8s-manifests/secret.yaml
+          
+          - task: KubernetesManifest@0
+            displayName: 'Create Namespace'
+            inputs:
+              action: 'deploy'
+              kubernetesServiceConnection: $(kubernetesServiceConnection)
+              manifests: 'k8s-manifests/namespace.yaml'
+          
+          - task: KubernetesManifest@0
+            displayName: 'Deploy ConfigMap and Secrets'
+            inputs:
+              action: 'deploy'
+              kubernetesServiceConnection: $(kubernetesServiceConnection)
+              namespace: $(kubernetesNamespace)
+              manifests: |
+                k8s-manifests/configmap.yaml
+                k8s-manifests/secret.yaml
+                k8s-manifests/service-account.yaml
+          
+          - task: KubernetesManifest@0
+            displayName: 'Deploy Storage Resources'
+            inputs:
+              action: 'deploy'
+              kubernetesServiceConnection: $(kubernetesServiceConnection)
+              namespace: $(kubernetesNamespace)
+              manifests: 'k8s-manifests/pvc.yaml'
+          
+          - task: KubernetesManifest@0
+            displayName: 'Deploy n8n Application'
+            inputs:
+              action: 'deploy'
+              kubernetesServiceConnection: $(kubernetesServiceConnection)
+              namespace: $(kubernetesNamespace)
+              manifests: |
+                k8s-manifests/n8n-deployment.yaml
+                k8s-manifests/n8n-service.yaml
+                k8s-manifests/n8n-ingress.yaml
+                k8s-manifests/hpa.yaml
+                k8s-manifests/network-policy.yaml
+                k8s-manifests/pod-disruption-budget.yaml
+          
+          - task: KubernetesManifest@0
+            displayName: 'Deploy Monitoring Resources'
+            inputs:
+              action: 'deploy'
+              kubernetesServiceConnection: $(kubernetesServiceConnection)
+              namespace: $(kubernetesNamespace)
+              manifests: 'k8s-manifests/service-monitor.yaml'
+
+- stage: Verify_Deployment
+  displayName: 'Verify Deployment'
+  dependsOn: Deploy_Application
+  jobs:
+  - job: HealthCheck
+    displayName: 'Health Check and Integration Tests'
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Get AKS Credentials'
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          az aks get-credentials --resource-group $(resourceGroupName) --name $(aksClusterName)
+    
+    - script: |
+        echo "Waiting for pods to be ready..."
+        kubectl wait --for=condition=ready pod -l app=n8n -n $(kubernetesNamespace) --timeout=300s
+        
+        echo "Checking pod status..."
+        kubectl get pods -n $(kubernetesNamespace) -l app=n8n
+        
+        echo "Checking service endpoints..."
+        kubectl get svc -n $(kubernetesNamespace)
+        
+        echo "Checking ingress..."
+        kubectl get ingress -n $(kubernetesNamespace)
+      displayName: 'Check Deployment Status'
+    
+    - script: |
+        echo "Running health checks..."
+        chmod +x tests/health-check.sh
+        
+        # Port forward to access n8n locally for testing
+        kubectl port-forward svc/n8n-service 8080:80 -n $(kubernetesNamespace) &
+        PORTFORWARD_PID=$!
+        
+        sleep 10
+        
+        # Run health check against local port
+        export N8N_ENDPOINT="http://localhost:8080"
+        bash tests/health-check.sh
+        
+        # Cleanup
+        kill $PORTFORWARD_PID
+      displayName: 'Run Health Checks'
+    
+    - task: AzureCLI@2
+      displayName: 'Run Integration Tests'
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "Running integration tests..."
+          
+          # Test database connectivity
+          kubectl exec -n $(kubernetesNamespace) deployment/n8n -- sh -c 'nc -zv $N8N_DATABASE_HOST $N8N_DATABASE_PORT'
+          
+          # Check logs for errors
+          kubectl logs -n $(kubernetesNamespace) deployment/n8n --tail=50
+          
+          echo "Integration tests completed"
+
+- stage: Deploy_ArgoCD_App
+  displayName: 'Deploy ArgoCD Application'
+  dependsOn: Verify_Deployment
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - job: SetupArgoCD
+    displayName: 'Setup ArgoCD Application'
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Get AKS Credentials'
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          az aks get-credentials --resource-group $(resourceGroupName) --name $(aksClusterName)
+    
+    - script: |
+        # Check if ArgoCD is installed
+        if ! kubectl get namespace argocd; then
+          echo "Installing ArgoCD..."
+          kubectl create namespace argocd
+          kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+          
+          echo "Waiting for ArgoCD to be ready..."
+          kubectl wait --for=condition=available --timeout=600s deployment/argocd-server -n argocd
+        else
+          echo "ArgoCD already installed"
+        fi
+      displayName: 'Install ArgoCD'
+    
+    - script: |
+        # Update ArgoCD application manifest with actual repository URL
+        sed -i 's|https://github.com/your-org/n8n-aks-deployment|$(Build.Repository.Uri)|g' k8s-manifests/argocd/application.yaml
+        
+        # Apply ArgoCD resources
+        kubectl apply -f k8s-manifests/argocd/appproject.yaml
+        kubectl apply -f k8s-manifests/argocd/application.yaml
+      displayName: 'Deploy ArgoCD Application'
+    
+    - script: |
+        echo "ArgoCD Application Status:"
+        kubectl get applications -n argocd
+        
+        echo "Getting ArgoCD admin password:"
+        kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d > argocd-password.txt
+        echo "ArgoCD admin password saved to argocd-password.txt"
+      displayName: 'Check ArgoCD Status'
+    
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish ArgoCD Password'
+      inputs:
+        targetPath: 'argocd-password.txt'
+        artifact: 'argocd-credentials'

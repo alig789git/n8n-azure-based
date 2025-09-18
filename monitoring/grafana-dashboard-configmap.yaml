@@ -1,0 +1,63 @@
+# monitoring/grafana-dashboard-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: n8n-dashboard
+  namespace: monitoring
+data:
+  n8n-dashboard.json: |
+    {
+      "dashboard": {
+        "id": null,
+        "title": "n8n Monitoring Dashboard",
+        "tags": ["n8n", "workflow", "automation"],
+        "timezone": "browser",
+        "panels": [
+          {
+            "id": 1,
+            "title": "n8n Uptime",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "up{job=\"n8n\"}",
+                "legendFormat": "Uptime"
+              }
+            ],
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+            "fieldConfig": {
+              "defaults": {
+                "mappings": [
+                  {"options": {"0": {"text": "DOWN", "color": "red"}}, "type": "value"},
+                  {"options": {"1": {"text": "UP", "color": "green"}}, "type": "value"}
+                ]
+              }
+            }
+          },
+          {
+            "id": 2,
+            "title": "CPU Usage",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "rate(container_cpu_usage_seconds_total{pod=~\"n8n-.*\"}[5m]) * 100",
+                "legendFormat": "CPU Usage %"
+              }
+            ],
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+            "yAxes": [
+              {"unit": "percent", "max": 100, "min": 0}
+            ]
+          },
+          {
+            "id": 3,
+            "title": "Memory Usage",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "container_memory_usage_bytes{pod=~\"n8n-.*\"} / container_spec_memory_limit_bytes{pod=~\"n8n-.*\"} * 100",
+                "legendFormat": "Memory Usage %"
+              }
+            ],
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+            "yAxes": [
+              {"unit": "percent", "max": 100, "min": 0}
